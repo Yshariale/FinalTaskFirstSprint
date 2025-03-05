@@ -1,127 +1,59 @@
 package application
 
 import (
-	"FinalTaskFirstSprint/pkg/calculation"
-	"encoding/json"
-	"errors"
-	"io"
+	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
+
+	"github.com/gorilla/mux"
+
+	"github.com/Yshariale/FinalTaskFirstSprint/internal/config"
+	"github.com/Yshariale/FinalTaskFirstSprint/internal/services/expression"
+	"github.com/Yshariale/FinalTaskFirstSprint/internal/storage"
+	"github.com/Yshariale/FinalTaskFirstSprint/internal/transport/handlers"
+	"github.com/Yshariale/FinalTaskFirstSprint/internal/transport/middlewares"
 )
 
-type Config struct {
-	Addr string
-}
-
-func ConfigFromEnv() *Config {
-	config := new(Config)
-	config.Addr = os.Getenv("PORT")
-	if config.Addr == "" {
-		config.Addr = "4040"
-	}
-	return config
+func setUpLogger(logFile *os.File) error {
+	var logger = slog.New(slog.NewTextHandler(logFile, nil))
+	slog.SetDefault(logger)
+	return nil
 }
 
 type Application struct {
-	config *Config
+	config *config.Config
 }
 
 func New() *Application {
 	return &Application{
-		config: ConfigFromEnv(),
-	}
-}
-
-type Request struct {
-	Expression string `json:"expression"`
-}
-
-type BadResponse struct {
-	Error string `json:"error"`
-}
-
-type GoodResponse struct {
-	Result string `json:"result"`
-}
-
-func CalcHandler(w http.ResponseWriter, r *http.Request) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			err0 := json.NewEncoder(w).Encode(BadResponse{Error: "Internal server error1"})
-			if err0 != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error": "Internal server error2"}`))
-			}
-			return
-		}
-	}()
-
-	if r.Method != http.MethodPost {
-		//405
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		err10 := json.NewEncoder(w).Encode(BadResponse{Error: "You can use only POST method"})
-		if err10 != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error": "Internal server error3"}`))
-		}
-		return
-	}
-
-	request := new(Request)
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			err1 := json.NewEncoder(w).Encode(BadResponse{Error: "Internal server error4"})
-			if err1 != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error": "Internal server error5"}`))
-			}
-			return
-		}
-	}(r.Body)
-	err := json.NewDecoder(r.Body).Decode(&request)
-	if err != nil {
-		//400
-		w.WriteHeader(http.StatusBadRequest)
-		err2 := json.NewEncoder(w).Encode(BadResponse{Error: "Bad request"})
-		if err2 != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error": "Internal server error6"}`))
-		}
-		return
-	}
-
-	result, err := calculation.Calc(request.Expression)
-	if err != nil {
-		if errors.Is(err, calculation.ErrInvalidExpression) {
-			//422
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			err3 := json.NewEncoder(w).Encode(BadResponse{Error: "Expression is not valid"})
-			if err3 != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error": "Internal server error7"}`))
-			}
-		} else {
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			err4 := json.NewEncoder(w).Encode(BadResponse{Error: "You can't divide by zero"})
-			if err4 != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error": "Internal server error8"}`))
-			}
-		}
-	} else {
-		err5 := json.NewEncoder(w).Encode(GoodResponse{Result: strconv.FormatFloat(result, 'f', 8, 64)})
-		if err5 != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error": "Internal server error9"}`))
-		}
+		config: config.ConfigFromEnv(),
 	}
 }
 
 func (a *Application) RunServer() error {
-	http.HandleFunc("/api/v1/calculate", CalcHandler)
+	logFile, err := os.OpenFile("logs.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		slog.Error("Error while opening log file", "error", err)
+	}
+	defer logFile.Close()
+	err = setUpLogger(logFile)
+	if err != nil {
+		slog.Error("Error while setting up logger", "error", err)
+	}
+
+	// Создаем хранилище, которое будет передаваться вглубь приложения по ссылке,
+	// то есть все сервисы будут работать с одним и тем же хранилищем
+	storage := storage.NewStorage()
+
+	// А вот и сервис по работе с выражениями. Он используется в хендлерах для обработки запросов
+	expressionService := expression.NewExpressionService(storage, a.config.TimeConf)
+
+	slog.Info("Starting server", "port", a.config.Addr)
+	r := mux.NewRouter()
+	r.Handle("/api/v1/calculate", middlewares.LoggingMiddleware(handlers.NewCalcHandler(expressionService))).Methods(http.MethodPost)
+	r.Handle("/api/v1/expressions", middlewares.LoggingMiddleware(handlers.NewExpressionListHandler(expressionService))).Methods(http.MethodGet)
+	r.Handle("/api/v1/expressions/{id:[0-9]+}", middlewares.LoggingMiddleware(handlers.NewExpressionHandler(expressionService))).Methods(http.MethodGet)
+	r.Handle("/internal/task", middlewares.LoggingMiddleware(handlers.NewTaskHandler(expressionService)))
+	http.Handle("/", r)
 	return http.ListenAndServe(":"+a.config.Addr, nil)
 }
