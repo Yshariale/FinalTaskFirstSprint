@@ -8,7 +8,7 @@
 1. Клонируйте репозиторий
 ```bash
 git clone https://github.com/Yshariale/FinalTaskFirstSprint
-cd calc_api_go
+cd FinalTaskFirstSprint
 ```
 2. По желанию сконфигурируйте проект. Создайте файл `.env` и скопируйте в него содержимое `.env.example`:
 ```bash
@@ -96,7 +96,7 @@ curl --location 'localhost:8080/api/v1/expressions/1'
 На диаграмме видно, что сервер состоит из 3 слоев, которые взаимодействуют только со своим соседом.
 ![Структура приложения](diagram.png)
 ```
-calc_api_go
+Calculator
 ├── agent
 ├── cmd
 └── internal
